@@ -5,130 +5,142 @@ output:
     vertical_layout: fill
     theme: yeti
     css: "style.css"
-title: "r-polars dashboard"
-date: "r-polars version: `r packageVersion('polars')`"
+title: "tidypolars dashboard"
+date: "tidypolars version: `r packageVersion('tidypolars')`"
 ---
-
-```{r setup, include=FALSE, message=FALSE, warning=FALSE}
-library(dplyr)
-library(reactable)
-```
-
 
 Overview
 ========
 
-
 ```{r pr_summary}
-dicts <- list()
+library(reactable)
+library(tidyverse)
+library(tidypolars)
 
-families <- c(
-  "lazyframe",
-  "dataframe",
-  "series",
-  "expr",
-  "expr_arr",
-  "expr_bin",
-  "expr_cat",
-  "expr_dt",
-  "expr_list",
-  "expr_meta",
-  "expr_name",
-  "expr_str",
-  "expr_struct"
-)
+# Get tidypolars S3 methods and args -----------------------------------
 
-get_args <- function(fun) {
-  if (startsWith(fun, "series")) {
-    args <- tryCatch(
-      {
-        x <- eval(parse(
-          text = paste0("series_obj$", gsub("series__", "", fun))
-        ))
-        if (!is.function(x)) {
-          NULL
-        } else {
-          formalArgs(x)
-        }
-      },
-      error = function(e) NULL
-    )
-  } else {
-    args <- tryCatch(
-      formalArgs(eval(parse(text = paste0("polars:::", fun)))),
-      error = function(e) NULL
-    )
+all_tidypolars_obj <- ls(getNamespace("tidypolars"), all.names = TRUE) |>
+  grep("\\.polars_|_(lubridate|stringr)$", x = _, value = TRUE)
+
+get_pkg_args <- function(fun_names, pkg) {
+  # Load the namespace (but not attach the package)
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    stop(sprintf("Package '%s' is not installed.", pkg))
   }
 
-  if (is.null(args)) {
-    return("NO ARGS")
-  }
-  args[args != "self"]
-}
+  ns <- asNamespace(pkg)
 
-all_polars_obj <- ls(getNamespace("polars"), all.names = TRUE)
-
-# Series are dispatched from expr
-series_obj <- polars::as_polars_series(NULL)
-series_names <- paste0("series__", .DollarNames(series_obj))
-all_polars_obj <- c(all_polars_obj, series_names)
-
-for (fam in families) {
-  fns <- all_polars_obj[startsWith(all_polars_obj, paste0(fam, "_"))]
-  for (fun in fns) {
-    args <- get_args(fun = fun)
-    if (length(args) == 0) {
-      next
+  res <- lapply(fun_names, function(fn) {
+    if (!exists(fn, envir = ns, inherits = FALSE)) {
+      return(data.frame(
+        function_name = fn,
+        arg = NA_character_,
+        stringsAsFactors = FALSE
+      ))
     }
-    dicts[[paste0(fun)]] <- data.frame(fun = fun, args = args)
-  }
+
+    fobj <- get(fn, envir = ns)
+    args <- names(formals(fobj))
+
+    data.frame(
+      function_name = fn,
+      arg = args,
+      stringsAsFactors = FALSE
+    )
+  })
+
+  do.call(rbind, res)
 }
 
-r_pol_funs <- data.table::rbindlist(dicts) |>
-  as_tibble() |>
+tidypolars_funs <- get_pkg_args(all_tidypolars_obj, "tidypolars") |>
   mutate(
-    fun = stringr::str_replace_all(fun, c("expr__" = "expr_")),
-    fun = stringr::str_replace_all(fun, c("expr_" = "Expr_")),
-    fun = stringr::str_replace_all(fun, c("lazyframe__" = "LazyFrame_")),
-    fun = stringr::str_replace_all(fun, c("dataframe__" = "DataFrame_")),
-    fun = stringr::str_replace_all(fun, c("series__" = "Series_")),
-    # We don't want to highlight differences simply because py-polars has
-    # "strict" and we have ".strict" for instance.
-    args = gsub("^\\.([a-zA-Z])", "\\1", args),
-    args = case_when(
-      stringr::str_detect(fun, "(_drop_nans|_drop_nulls)$") & args == "..." ~ "subset",
-      .default = args
+    function_name = gsub("\\.polars_.*", "", function_name),
+    function_name = gsub("^pl_", "", function_name),
+    function_name = gsub("_(lubridate|stringr)$", "", function_name),
+  ) |>
+  distinct()
+
+# Get tidyverse S3 methods and args -----------------------------------
+
+get_tidyverse_args <- function(
+  fun_names,
+  pkgs = c("dplyr", "tidyr", "stringr", "lubridate")
+) {
+  # Load namespaces quietly
+  lapply(pkgs, requireNamespace, quietly = TRUE)
+
+  # Helper to find exported function and its package
+  find_exported_fun <- function(fun) {
+    for (p in pkgs) {
+      exports <- getNamespaceExports(p)
+
+      # Only match exported names
+      if (fun %in% exports) {
+        # Retrieve exported function
+        fobj <- getExportedValue(p, fun)
+
+        return(list(fun = fobj, pkg = p))
+      }
+    }
+    return(NULL)
+  }
+
+  res <- lapply(fun_names, function(fn) {
+    fdata <- find_exported_fun(fn)
+
+    if (is.null(fdata)) {
+      return(data.frame(
+        package = NA_character_,
+        function_name = fn,
+        arg = NA_character_,
+        stringsAsFactors = FALSE
+      ))
+    }
+
+    fobj <- fdata$fun
+    pkg <- fdata$pkg
+    args <- names(formals(fobj))
+
+    data.frame(
+      package = pkg,
+      function_name = fn,
+      arg = args,
+      stringsAsFactors = FALSE
     )
-  )
+  })
 
-# py-polars -----------------------------------------------------
+  do.call(rbind, res)
+}
 
-py_pol_funs <- data.table::fread("py_polars_functions_and_args.csv") |>
-  as_tibble() |>
-  filter(!(grepl("_select", fun) & args == "exprs"))
+tidyverse_funs <- get_tidyverse_args(unique(tidypolars_funs$function_name))
 
-# gather ---------------------------------------------------
 
-dat <- py_pol_funs |>
-  left_join(r_pol_funs, suffix = c("_py", "_r"), keep = TRUE)
+# Final table -----------------------------------
+
+all_funs <- left_join(
+  tidyverse_funs,
+  tidypolars_funs,
+  join_by(function_name, arg),
+  suffix = c("_tv", "_tp"),
+  keep = TRUE
+) |>
+  arrange(package_tv, args_tv)
 
 reactable(
-  dat,
-  defaultPageSize = nrow(dat),
+  all_funs,
+  defaultPageSize = nrow(all_funs),
   defaultColDef = colDef(
     align = "left",
     minWidth = 70
   ),
-  filterable = TRUE,
-  searchable = TRUE,
   columns = list(
-    fun_r = colDef(
+    function_name_tp = colDef(
       style = function(value) {
         color <- ifelse(is.na(value), "#ffb3b3", "white")
         list(background = color)
       }
     ),
-    args_r = colDef(
+    arg_tp = colDef(
       style = function(value) {
         color <- ifelse(is.na(value), "#ffb3b3", "white")
         list(background = color)
@@ -169,5 +181,6 @@ reactable(
     )
   )
 )
+
 ```
 
