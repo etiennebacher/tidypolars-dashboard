@@ -14,6 +14,8 @@ concurrency:
 jobs:
   build:
     runs-on: macos-latest
+    env:
+      GITHUB_PAT: ${{ secrets.TIDYPOLARS_DASHBOARD_PAT }}
     steps:
       - uses: actions/checkout@v4
 
