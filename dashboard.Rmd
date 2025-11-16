@@ -124,7 +124,7 @@ all_funs <- left_join(
   suffix = c("_tv", "_tp"),
   keep = TRUE
 ) |>
-  arrange(package_tv, args_tv)
+  arrange(package, function_name_tv, arg_tv)
 
 reactable(
   all_funs,
