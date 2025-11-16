@@ -1,0 +1,167 @@
+library(reactable)
+library(tidyverse)
+
+# Get tidypolars S3 methods and args -----------------------------------
+
+all_tidypolars_obj <- ls(getNamespace("tidypolars"), all.names = TRUE) |>
+  grep("\\.polars_|_(lubridate|stringr)$", x = _, value = TRUE)
+
+get_pkg_args <- function(fun_names, pkg) {
+  # Load the namespace (but not attach the package)
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    stop(sprintf("Package '%s' is not installed.", pkg))
+  }
+
+  ns <- asNamespace(pkg)
+
+  res <- lapply(fun_names, function(fn) {
+    if (!exists(fn, envir = ns, inherits = FALSE)) {
+      return(data.frame(
+        function_name = fn,
+        arg = NA_character_,
+        stringsAsFactors = FALSE
+      ))
+    }
+
+    fobj <- get(fn, envir = ns)
+    args <- names(formals(fobj))
+
+    data.frame(
+      function_name = fn,
+      arg = args,
+      stringsAsFactors = FALSE
+    )
+  })
+
+  do.call(rbind, res)
+}
+
+tidypolars_funs <- get_pkg_args(all_tidypolars_obj, "tidypolars") |>
+  mutate(
+    function_name = gsub("\\.polars_.*", "", function_name),
+    function_name = gsub("^pl_", "", function_name),
+    function_name = gsub("_(lubridate|stringr)$", "", function_name),
+  ) |>
+  distinct()
+
+# Get tidyverse S3 methods and args -----------------------------------
+
+get_tidyverse_args <- function(
+  fun_names,
+  pkgs = c("dplyr", "tidyr", "stringr", "lubridate")
+) {
+  # Load namespaces quietly
+  lapply(pkgs, requireNamespace, quietly = TRUE)
+
+  # Helper to find exported function and its package
+  find_exported_fun <- function(fun) {
+    for (p in pkgs) {
+      exports <- getNamespaceExports(p)
+
+      # Only match exported names
+      if (fun %in% exports) {
+        # Retrieve exported function
+        fobj <- getExportedValue(p, fun)
+
+        return(list(fun = fobj, pkg = p))
+      }
+    }
+    return(NULL)
+  }
+
+  res <- lapply(fun_names, function(fn) {
+    fdata <- find_exported_fun(fn)
+
+    if (is.null(fdata)) {
+      return(data.frame(
+        package = NA_character_,
+        function_name = fn,
+        arg = NA_character_,
+        stringsAsFactors = FALSE
+      ))
+    }
+
+    fobj <- fdata$fun
+    pkg <- fdata$pkg
+    args <- names(formals(fobj))
+
+    data.frame(
+      package = pkg,
+      function_name = fn,
+      arg = args,
+      stringsAsFactors = FALSE
+    )
+  })
+
+  do.call(rbind, res)
+}
+
+tidyverse_funs <- get_tidyverse_args(unique(tidypolars_funs$function_name))
+
+
+# Final table -----------------------------------
+
+all_funs <- left_join(
+  tidyverse_funs,
+  tidypolars_funs,
+  join_by(function_name, arg),
+  suffix = c("_tv", "_tp"),
+  keep = TRUE
+) |>
+  arrange(package_tv, args_tv)
+
+reactable(
+  all_funs,
+  defaultPageSize = nrow(all_funs),
+  defaultColDef = colDef(
+    align = "left",
+    minWidth = 70
+  ),
+  columns = list(
+    function_name_tp = colDef(
+      style = function(value) {
+        color <- ifelse(is.na(value), "#ffb3b3", "white")
+        list(background = color)
+      }
+    ),
+    arg_tp = colDef(
+      style = function(value) {
+        color <- ifelse(is.na(value), "#ffb3b3", "white")
+        list(background = color)
+      }
+    )
+  ),
+  theme = reactableTheme(
+    headerStyle = list(
+      "&:hover[aria-sort]" = list(background = "hsl(0, 0%, 96%)"),
+      "&[aria-sort='ascending'], &[aria-sort='descending']" = list(
+        background = "hsl(0, 0%, 96%)"
+      ),
+      borderColor = "#555"
+    ),
+    style = list(
+      fontFamily = "Work Sans, Helvetica Neue, Helvetica, Arial, sans-serif",
+      fontSize = "1.25rem",
+      "a" = list(
+        color = "#000000",
+        textDecoration = "none",
+        "&:hover, &:focus" = list(
+          textDecoration = "underline",
+          textDecorationThickness = "1px"
+        )
+      ),
+      ".number" = list(
+        color = "#666666",
+        fontFamily = "Source Code Pro, Consolas, Monaco, monospace"
+      ),
+      ".tag" = list(
+        padding = "0.125rem 0.25rem",
+        color = "hsl(0, 0%, 40%)",
+        fontSize = "1.25rem",
+        border = "1px solid hsl(0, 0%, 24%)",
+        borderRadius = "2px",
+        textTransform = "uppercase"
+      )
+    )
+  )
+)
